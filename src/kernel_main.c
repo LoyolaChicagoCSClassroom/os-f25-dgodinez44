@@ -1,10 +1,18 @@
 
 #include <stdint.h>
 #include "rprintf.h"
+#include "page.h"
+#include "mmu.h"
 
 #define MULTIBOOT2_HEADER_MAGIC         0xe85250d6
 
 const unsigned int multiboot_header[]  __attribute__((section(".multiboot"))) = {MULTIBOOT2_HEADER_MAGIC, 0, 16, -(16+MULTIBOOT2_HEADER_MAGIC), 0, 12};
+
+extern char _end_kernel;
+
+// Global page structures
+extern struct page_directory_entry pd[1024];
+extern struct page pt[1024];
 
 uint8_t inb (uint16_t _port) {
     uint8_t rv;
@@ -113,6 +121,63 @@ int putc(int c){
   return 0;
 } 
 
+void setup_paging(void){
+    esp_printf(putc, "Setting up paging...\r\n");
+    
+    // Initialize page directory and page table
+    init_page_structures();
+    
+    // Get the stack pointer
+    uint32_t esp;
+    asm("mov %%esp, %0" : "=r" (esp));
+    
+    // Identity map the kernel (0x100000 to &_end_kernel)
+    esp_printf(putc, "Identity mapping kernel from 0x100000 to 0x%x\r\n", (uint32_t)&_end_kernel);
+    
+    uint32_t kernel_start = 0x100000;
+    uint32_t kernel_end = (uint32_t)&_end_kernel;
+    
+    // Round up to nearest page boundary
+    kernel_end = (kernel_end + 0xFFF) & ~0xFFF;
+    
+    for (uint32_t addr = kernel_start; addr < kernel_end; addr += 0x1000) {
+        struct ppage tmp;
+        tmp.next = NULL;
+        tmp.physical_addr = (void *)addr;
+        map_pages((void *)addr, &tmp, pd);
+    }
+    
+    // Identity map the stack
+    esp_printf(putc, "Identity mapping stack at 0x%x\r\n", esp);
+    
+    // Map a few pages around the stack pointer
+    uint32_t stack_page = esp & ~0xFFF; // Round down to page boundary
+    for (int i = 0; i < 4; i++) { // Map 4 pages for the stack
+        struct ppage tmp;
+        tmp.next = NULL;
+        tmp.physical_addr = (void *)(stack_page - (i * 0x1000));
+        map_pages((void *)(stack_page - (i * 0x1000)), &tmp, pd);
+    }
+    
+    // Identity map the video buffer at 0xB8000
+    esp_printf(putc, "Identity mapping video buffer at 0xB8000\r\n");
+    struct ppage tmp;
+    tmp.next = NULL;
+    tmp.physical_addr = (void *)0xB8000;
+    map_pages((void *)0xB8000, &tmp, pd);
+    
+    // Load the page directory into CR3
+    esp_printf(putc, "Loading page directory...\r\n");
+    loadPageDirectory(pd);
+    
+    // Enable paging
+    esp_printf(putc, "Enabling paging...\r\n");
+    enable_paging();
+    
+    esp_printf(putc, "Paging enabled successfully!\r\n");
+
+}
+
 void main() {
     putc('h');
     putc('e');
@@ -122,21 +187,18 @@ void main() {
     putc(' ');
     putc('\r'); // Test carriage return
     putc('\n'); // Test newline
-    
-   while(1) {
-    uint8_t status = inb(0x64);
-    
-     if(status & 1) {  // Check if output buffer has data
-        uint8_t scancode = inb(0x60);
-        
-       if(scancode < 128) {  // Only print key presses (not releases)
-            esp_printf(putc, "0x%02x    %c\n", scancode, keyboard_map[scancode]);
-       }
-     }
-   }
+
+   esp_printf(putc, "Kernel started!\r\n");
+
+   // Initialize the page frame allocator
+   esp_printf(putc, "Initializing page frame allocator...\r\n");
+   init_pfa_list();
  
+   // Setup paging
+   setup_paging();
 
    // Print current execution level
+   esp_printf(putc, "\r\n");
    esp_printf(putc, "Current execution level: Kernel Mode (Ring 0)\r\n");
    esp_printf(putc, "Kernel loaded successfully!\r\n");
    esp_printf(putc, "\r\n");
@@ -146,7 +208,7 @@ void main() {
    esp_printf(putc, "This test will fill the screen and demonstrate scrolling.\r\n");
    esp_printf(putc, "\r\n");
 
-   for (int i = 1; i <= 30; i++){
+   for (int i = 1; i <= 5; i++){
      esp_printf(putc, "Line %d: Scroll test line\r\n", i);
    }   
    
