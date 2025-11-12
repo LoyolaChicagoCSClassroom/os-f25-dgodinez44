@@ -3,6 +3,8 @@
 #include "rprintf.h"
 #include "page.h"
 #include "mmu.h"
+#include "fat.h"
+#include "ide.h"
 
 #define MULTIBOOT2_HEADER_MAGIC         0xe85250d6
 
@@ -196,6 +198,37 @@ void main() {
  
    // Setup paging
    setup_paging();
+
+   
+   // Test disk reading
+   esp_printf(putc, "\r\n=== Testing Disk Read ===\r\n");
+   char test_buffer[512];
+   int result = ata_lba_read(2048, (unsigned char*)test_buffer, 1);
+   esp_printf(putc, "ata_lba_read returned: %d\r\n", result);
+   esp_printf(putc, "Boot signature bytes: 0x%x 0x%x\r\n", 
+              (unsigned char)test_buffer[510], (unsigned char)test_buffer[511]);
+   
+   // Test FAT filesystem
+   esp_printf(putc, "\r\n=== Testing FAT Filesystem ===\r\n");
+
+   if (fatInit() == 0) {
+     // Try to open and read a test file
+     struct file *f = fatOpen("/TESTFILE.TXT");
+     if (f != NULL) {
+       char file_buffer[512];
+       int bytes = fatRead(f, file_buffer, 512);
+       if (bytes > 0) {
+         file_buffer[bytes] = '\0'; // Null terminate
+         esp_printf(putc, "\r\nFile contents: \r\n%s\r\n", file_buffer);
+       }
+     } else {
+        esp_printf(putc, "Could not open test file \r\n");
+     }
+   } else {
+      esp_printf(putc, "FAT initialization failed\r\n");
+   }
+   esp_printf(putc, "=== FAT Test Complete ===\r\n\r\n)");
+   
 
    // Print current execution level
    esp_printf(putc, "\r\n");
